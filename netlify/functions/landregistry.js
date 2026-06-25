@@ -81,6 +81,7 @@ SELECT ?amount ?date WHERE {
      lrppi:propertyAddress ?addr .
   ?addr lrcommon:paon "${house}" ;
         lrcommon:postcode "${formattedPC}" .
+  FILTER(?date > "2015-01-01"^^xsd:date)
 }
 ORDER BY DESC(?date)
 LIMIT 5`;
@@ -91,7 +92,8 @@ LIMIT 5`;
           const lastSale = r1.body.results.bindings[0];
           const price = parseInt(lastSale.amount.value);
           const year = lastSale.date.value.substring(0, 4);
-          if (price > 10000) {
+          const saleYear = parseInt(year);
+          if (price > 10000 && saleYear >= 2015) {
             baseEstimate = Math.round(price * growthMultiplier(year));
             level = 'property';
           }
