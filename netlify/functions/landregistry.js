@@ -112,6 +112,7 @@ SELECT ?amount ?date ?paon ?street WHERE {
   ?addr lrcommon:postcode "${formattedPC}" ;
         lrcommon:paon ?paon ;
         lrcommon:street ?street .
+  FILTER(?date > "2015-01-01"^^xsd:date)
 }
 ORDER BY DESC(?date)
 LIMIT 25`;
