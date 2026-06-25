@@ -620,7 +620,7 @@ function toggleMenu(){
     timer = setTimeout(close, 4000);
   }, 2000);
   pill.addEventListener("mouseenter", function(){clearTimeout(timer); open();});
-  pill.addEventListener("mouseleave", function(){timer = setTimeout(close, 1500);});
+  pill.addEventListener("mouseleave", function(){clearTimeout(timer); close();});
 })();
 </script>
 </body>
