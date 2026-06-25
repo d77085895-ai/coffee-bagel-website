@@ -1,18 +1,18 @@
 const https = require('https');
 
-const API_KEY = 'ielkyvGF.XXmcvBWuMLWLtFpEOLR065wStIWFhgt1';
-const BASE = 'api.homedata.co.uk';
-
-function apiGet(path) {
+function sparqlQuery(query) {
   return new Promise((resolve, reject) => {
+    const encoded = encodeURIComponent(query);
+    const path = '/landregistry/query?query=' + encoded + '&output=json';
     const options = {
-      hostname: BASE,
+      hostname: 'landregistry.data.gov.uk',
       path: path,
       method: 'GET',
       headers: {
-        'Authorization': 'Api-Key ' + API_KEY,
-        'Accept': 'application/json'
-      }
+        'Accept': 'application/sparql-results+json',
+        'User-Agent': 'Mozilla/5.0 (compatible; CoffeeAndBagelEstates/1.0)'
+      },
+      timeout: 15000
     };
     const req = https.request(options, (res) => {
       let data = '';
@@ -21,12 +21,12 @@ function apiGet(path) {
         try {
           resolve({ status: res.statusCode, body: JSON.parse(data) });
         } catch(e) {
-          reject(new Error('JSON parse error: ' + data.substring(0, 200)));
+          reject(new Error('Parse error ' + res.statusCode + ': ' + data.substring(0, 100)));
         }
       });
     });
     req.on('error', reject);
-    req.setTimeout(10000, () => { req.destroy(); reject(new Error('Timeout')); });
+    req.on('timeout', () => { req.destroy(); reject(new Error('Timeout')); });
     req.end();
   });
 }
@@ -55,8 +55,7 @@ exports.handler = async function(event) {
   try {
     const params = event.queryStringParameters || {};
     const rawPostcode = (params.postcode || '').trim();
-    const house = (params.house || '').trim();
-    const street = (params.street || '').trim();
+    const house = (params.house || '').toUpperCase().trim();
 
     if (!rawPostcode) {
       return { statusCode: 400, headers, body: JSON.stringify({ error: 'Postcode required' }) };
@@ -65,107 +64,127 @@ exports.handler = async function(event) {
     const formattedPC = formatPostcode(rawPostcode);
     const outward = formattedPC.replace(/\s*[0-9][A-Z]{2}$/, '').trim();
 
-    let uprn = null;
-    let propertyData = null;
-    let level = 'area';
+    let level = 'none';
     let baseEstimate = 0;
     let recentSales = [];
     let salesCount = 0;
     let avgSalePrice = 0;
-    let propertyDetails = null;
 
-    // STEP 1: Find address -> get UPRN
+    // LEVEL 1: Search for this specific property by house number + full postcode
     if (house) {
-      const query = encodeURIComponent(house + ' ' + (street ? street + ' ' : '') + formattedPC);
-      try {
-        const findResult = await apiGet('/api/address/find/?q=' + query);
-        if (findResult.status === 200 && findResult.body) {
-          // Try different response shapes
-          const suggestions = findResult.body.suggestions || findResult.body.data || findResult.body.results || [];
-          if (suggestions.length > 0) {
-            uprn = suggestions[0].uprn;
-          }
-        }
-      } catch(e) { /* continue without UPRN */ }
-    }
+      const q1 = `
+PREFIX lrppi: <http://landregistry.data.gov.uk/def/ppi/>
+PREFIX lrcommon: <http://landregistry.data.gov.uk/def/common/>
+SELECT ?amount ?date WHERE {
+  ?t lrppi:pricePaid ?amount ;
+     lrppi:transactionDate ?date ;
+     lrppi:propertyAddress ?addr .
+  ?addr lrcommon:paon "${house}" ;
+        lrcommon:postcode "${formattedPC}" .
+}
+ORDER BY DESC(?date)
+LIMIT 5`;
 
-    // STEP 2: Get property details + sale history using UPRN
-    if (uprn) {
       try {
-        const propResult = await apiGet('/api/properties/' + uprn + '/');
-        if (propResult.status === 200 && propResult.body) {
-          const prop = propResult.body;
-          propertyDetails = {
-            bedrooms: prop.bedrooms || null,
-            propertyType: prop.property_type || null,
-            tenure: prop.tenure || null,
-            floorArea: prop.floor_area_sqm || null,
-            epc: prop.epc_rating || null
-          };
-        }
-      } catch(e) { /* continue */ }
-
-      // Get sale history for this specific property
-      try {
-        const salesResult = await apiGet('/api/property_sales/?uprn=' + uprn);
-        if (salesResult.status === 200 && salesResult.body && salesResult.body.results && salesResult.body.results.length > 0) {
-          const prop = salesResult.body.results[0];
-          const events = prop.property_sale_events || [];
-          // Find the most recent completed sale
-          const completedSales = events.filter(e => e.event_type === 'Completed' && e.price);
-          if (completedSales.length > 0) {
-            const lastSale = completedSales[completedSales.length - 1];
-            const soldYear = lastSale.date ? lastSale.date.substring(0, 4) : '2018';
-            baseEstimate = Math.round(lastSale.price * growthMultiplier(soldYear));
+        const r1 = await sparqlQuery(q1);
+        if (r1.status === 200 && r1.body.results && r1.body.results.bindings.length > 0) {
+          const lastSale = r1.body.results.bindings[0];
+          const price = parseInt(lastSale.amount.value);
+          const year = lastSale.date.value.substring(0, 4);
+          if (price > 10000) {
+            baseEstimate = Math.round(price * growthMultiplier(year));
             level = 'property';
           }
         }
-      } catch(e) { /* continue */ }
+      } catch(e) { /* fall through */ }
     }
 
-    // STEP 3: Get postcode-level sold prices for comparables and table
+    // LEVEL 2: All sales in this exact postcode
+    const q2 = `
+PREFIX lrppi: <http://landregistry.data.gov.uk/def/ppi/>
+PREFIX lrcommon: <http://landregistry.data.gov.uk/def/common/>
+SELECT ?amount ?date ?paon ?street WHERE {
+  ?t lrppi:pricePaid ?amount ;
+     lrppi:transactionDate ?date ;
+     lrppi:propertyAddress ?addr .
+  ?addr lrcommon:postcode "${formattedPC}" ;
+        lrcommon:paon ?paon ;
+        lrcommon:street ?street .
+}
+ORDER BY DESC(?date)
+LIMIT 25`;
+
     try {
-      const pcEncoded = encodeURIComponent(formattedPC);
-      const soldResult = await apiGet('/api/property_sales/?postcode=' + pcEncoded + '&limit=20');
-      if (soldResult.status === 200 && soldResult.body && soldResult.body.results) {
-        const results = soldResult.body.results;
-        const allPrices = [];
-        results.forEach(prop => {
-          const events = prop.property_sale_events || [];
-          events.filter(e => e.event_type === 'Completed' && e.price).forEach(e => {
-            allPrices.push(e.price);
+      const r2 = await sparqlQuery(q2);
+      if (r2.status === 200 && r2.body.results && r2.body.results.bindings.length > 0) {
+        const bindings = r2.body.results.bindings;
+        const prices = [];
+        bindings.forEach(b => {
+          const price = parseInt(b.amount.value);
+          if (price > 10000 && price < 10000000) {
+            prices.push(price);
             recentSales.push({
-              address: prop.address || '',
-              amount: e.price,
-              date: e.date
+              address: (b.paon ? b.paon.value + ' ' : '') + (b.street ? b.street.value : ''),
+              amount: price,
+              date: b.date ? b.date.value : null
             });
-          });
+          }
         });
-        if (allPrices.length > 0) {
-          avgSalePrice = Math.round(allPrices.reduce((a, b) => a + b, 0) / allPrices.length);
-          salesCount = allPrices.length;
+        if (prices.length > 0) {
+          avgSalePrice = Math.round(prices.reduce((a, b) => a + b, 0) / prices.length);
+          salesCount = prices.length;
           if (level !== 'property') {
             baseEstimate = avgSalePrice;
             level = 'postcode';
           }
         }
-        recentSales = recentSales.slice(0, 10);
       }
-    } catch(e) { /* continue */ }
+    } catch(e) { /* fall through */ }
 
-    // STEP 4: Fallback to price trends for outward code
+    // LEVEL 3: Broader outward code search if still no data
     if (baseEstimate === 0) {
+      const q3 = `
+PREFIX lrppi: <http://landregistry.data.gov.uk/def/ppi/>
+PREFIX lrcommon: <http://landregistry.data.gov.uk/def/common/>
+SELECT ?amount ?date ?paon ?street WHERE {
+  ?t lrppi:pricePaid ?amount ;
+     lrppi:transactionDate ?date ;
+     lrppi:propertyAddress ?addr .
+  ?addr lrcommon:postcode ?pc ;
+        lrcommon:paon ?paon ;
+        lrcommon:street ?street .
+  FILTER(STRSTARTS(str(?pc), "${outward}"))
+  FILTER(?date > "2021-01-01"^^xsd:date)
+}
+ORDER BY DESC(?date)
+LIMIT 20`;
+
       try {
-        const trendResult = await apiGet('/api/price_trends/' + encodeURIComponent(outward) + '/');
-        if (trendResult.status === 200 && trendResult.body && trendResult.body.trends) {
-          const trends = trendResult.body.trends;
-          if (trends.length > 0) {
-            const latest = trends[trends.length - 1];
-            baseEstimate = latest.median_price || 0;
+        const r3 = await sparqlQuery(q3);
+        if (r3.status === 200 && r3.body.results && r3.body.results.bindings.length > 0) {
+          const bindings = r3.body.results.bindings;
+          const prices = [];
+          bindings.forEach(b => {
+            const price = parseInt(b.amount.value);
+            if (price > 10000 && price < 10000000) {
+              prices.push(price);
+              if (recentSales.length < 10) {
+                recentSales.push({
+                  address: (b.paon ? b.paon.value + ' ' : '') + (b.street ? b.street.value : ''),
+                  amount: price,
+                  date: b.date ? b.date.value : null
+                });
+              }
+            }
+          });
+          if (prices.length > 0) {
+            avgSalePrice = Math.round(prices.reduce((a, b) => a + b, 0) / prices.length);
+            salesCount = prices.length;
+            baseEstimate = avgSalePrice;
             level = 'area';
           }
         }
-      } catch(e) { /* continue */ }
+      } catch(e) { /* fall through */ }
     }
 
     // Final fallback
@@ -189,8 +208,7 @@ exports.handler = async function(event) {
         rentHigh: Math.round((baseEstimate * 0.045 * 1.08) / 12),
         averageSalePrice: avgSalePrice,
         salesCount,
-        recentSales,
-        propertyDetails,
+        recentSales: recentSales.slice(0, 10),
         outward
       })
     };
