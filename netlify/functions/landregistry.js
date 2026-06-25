@@ -1,23 +1,40 @@
 const https = require('https');
 
-function httpsGet(url, apiKey) {
+const API_KEY = 'ielkyvGF.XXmcvBWuMLWLtFpEOLR065wStIWFhgt1';
+const BASE = 'api.homedata.co.uk';
+
+function apiGet(path) {
   return new Promise((resolve, reject) => {
     const options = {
+      hostname: BASE,
+      path: path,
+      method: 'GET',
       headers: {
-        'Authorization': 'Api-Key ' + apiKey,
-        'Accept': 'application/json',
-        'User-Agent': 'CoffeeAndBagelEstates/1.0'
+        'Authorization': 'Api-Key ' + API_KEY,
+        'Accept': 'application/json'
       }
     };
-    https.get(url, options, (res) => {
+    const req = https.request(options, (res) => {
       let data = '';
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
-        try { resolve({ status: res.statusCode, body: JSON.parse(data) }); }
-        catch(e) { reject(new Error('Invalid JSON: ' + data.substring(0, 100))); }
+        try {
+          resolve({ status: res.statusCode, body: JSON.parse(data) });
+        } catch(e) {
+          reject(new Error('JSON parse error: ' + data.substring(0, 200)));
+        }
       });
-    }).on('error', reject);
+    });
+    req.on('error', reject);
+    req.setTimeout(10000, () => { req.destroy(); reject(new Error('Timeout')); });
+    req.end();
   });
+}
+
+function growthMultiplier(soldYear) {
+  const years = new Date().getFullYear() - parseInt(soldYear);
+  if (years <= 0) return 1.0;
+  return Math.pow(1.045, Math.min(years, 25));
 }
 
 function formatPostcode(pc) {
@@ -25,16 +42,9 @@ function formatPostcode(pc) {
   return clean.replace(/([A-Z]{1,2}[0-9]{1,2}[A-Z]?)([0-9][A-Z]{2})$/, '$1 $2');
 }
 
-function growthMultiplier(soldYear) {
-  const years = new Date().getFullYear() - soldYear;
-  if (years <= 0) return 1.0;
-  return Math.pow(1.045, Math.min(years, 25));
-}
-
 exports.handler = async function(event) {
   const headers = {
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Content-Type',
     'Content-Type': 'application/json'
   };
 
@@ -42,13 +52,11 @@ exports.handler = async function(event) {
     return { statusCode: 200, headers, body: '' };
   }
 
-  const API_KEY = 'ielkyvGF.XXmcvBWuMLWLtFpEOLR065wStIWFhgt1';
-
   try {
     const params = event.queryStringParameters || {};
     const rawPostcode = (params.postcode || '').trim();
-    const houseNumber = (params.house || '').trim();
-    const streetName = (params.street || '').trim().toUpperCase();
+    const house = (params.house || '').trim();
+    const street = (params.street || '').trim();
 
     if (!rawPostcode) {
       return { statusCode: 400, headers, body: JSON.stringify({ error: 'Postcode required' }) };
@@ -57,92 +65,116 @@ exports.handler = async function(event) {
     const formattedPC = formatPostcode(rawPostcode);
     const outward = formattedPC.replace(/\s*[0-9][A-Z]{2}$/, '').trim();
 
-    // STEP 1: Try to find specific property using address search
     let uprn = null;
-    let propertyRecord = null;
+    let propertyData = null;
+    let level = 'area';
+    let baseEstimate = 0;
+    let recentSales = [];
+    let salesCount = 0;
+    let avgSalePrice = 0;
+    let propertyDetails = null;
 
-    if (houseNumber) {
-      const searchQuery = encodeURIComponent(houseNumber + ' ' + (streetName || '') + ' ' + formattedPC);
-      const searchUrl = 'https://api.homedata.co.uk/api/address/find/?q=' + searchQuery + '&limit=5';
-
+    // STEP 1: Find address -> get UPRN
+    if (house) {
+      const query = encodeURIComponent(house + ' ' + (street ? street + ' ' : '') + formattedPC);
       try {
-        const searchResult = await httpsGet(searchUrl, API_KEY);
-        if (searchResult.status === 200 && searchResult.body && searchResult.body.results && searchResult.body.results.length > 0) {
-          const match = searchResult.body.results[0];
-          uprn = match.uprn;
+        const findResult = await apiGet('/api/address/find/?q=' + query);
+        if (findResult.status === 200 && findResult.body) {
+          // Try different response shapes
+          const suggestions = findResult.body.suggestions || findResult.body.data || findResult.body.results || [];
+          if (suggestions.length > 0) {
+            uprn = suggestions[0].uprn;
+          }
         }
-      } catch(e) { /* continue */ }
+      } catch(e) { /* continue without UPRN */ }
     }
 
-    // STEP 2: If we have a UPRN, get full property details
+    // STEP 2: Get property details + sale history using UPRN
     if (uprn) {
-      const detailUrl = 'https://api.homedata.co.uk/api/uprn/' + uprn + '/';
       try {
-        const detailResult = await httpsGet(detailUrl, API_KEY);
-        if (detailResult.status === 200 && detailResult.body) {
-          propertyRecord = detailResult.body;
+        const propResult = await apiGet('/api/properties/' + uprn + '/');
+        if (propResult.status === 200 && propResult.body) {
+          const prop = propResult.body;
+          propertyDetails = {
+            bedrooms: prop.bedrooms || null,
+            propertyType: prop.property_type || null,
+            tenure: prop.tenure || null,
+            floorArea: prop.floor_area_sqm || null,
+            epc: prop.epc_rating || null
+          };
+        }
+      } catch(e) { /* continue */ }
+
+      // Get sale history for this specific property
+      try {
+        const salesResult = await apiGet('/api/property_sales/?uprn=' + uprn);
+        if (salesResult.status === 200 && salesResult.body && salesResult.body.results && salesResult.body.results.length > 0) {
+          const prop = salesResult.body.results[0];
+          const events = prop.property_sale_events || [];
+          // Find the most recent completed sale
+          const completedSales = events.filter(e => e.event_type === 'Completed' && e.price);
+          if (completedSales.length > 0) {
+            const lastSale = completedSales[completedSales.length - 1];
+            const soldYear = lastSale.date ? lastSale.date.substring(0, 4) : '2018';
+            baseEstimate = Math.round(lastSale.price * growthMultiplier(soldYear));
+            level = 'property';
+          }
         }
       } catch(e) { /* continue */ }
     }
 
-    // STEP 3: Get sold prices for the postcode area
-    const soldUrl = 'https://api.homedata.co.uk/api/sold-prices/?postcode=' + encodeURIComponent(formattedPC) + '&limit=20';
-    let soldPrices = [];
+    // STEP 3: Get postcode-level sold prices for comparables and table
     try {
-      const soldResult = await httpsGet(soldUrl, API_KEY);
+      const pcEncoded = encodeURIComponent(formattedPC);
+      const soldResult = await apiGet('/api/property_sales/?postcode=' + pcEncoded + '&limit=20');
       if (soldResult.status === 200 && soldResult.body && soldResult.body.results) {
-        soldPrices = soldResult.body.results;
+        const results = soldResult.body.results;
+        const allPrices = [];
+        results.forEach(prop => {
+          const events = prop.property_sale_events || [];
+          events.filter(e => e.event_type === 'Completed' && e.price).forEach(e => {
+            allPrices.push(e.price);
+            recentSales.push({
+              address: prop.address || '',
+              amount: e.price,
+              date: e.date
+            });
+          });
+        });
+        if (allPrices.length > 0) {
+          avgSalePrice = Math.round(allPrices.reduce((a, b) => a + b, 0) / allPrices.length);
+          salesCount = allPrices.length;
+          if (level !== 'property') {
+            baseEstimate = avgSalePrice;
+            level = 'postcode';
+          }
+        }
+        recentSales = recentSales.slice(0, 10);
       }
     } catch(e) { /* continue */ }
 
-    // STEP 4: Calculate estimate
-    let baseEstimate = 0;
-    let level = 'area';
-    let salesCount = soldPrices.length;
-
-    if (propertyRecord && propertyRecord.last_sale_price && propertyRecord.last_sale_date) {
-      // Best case: specific property found with last sale price
-      const soldYear = parseInt(propertyRecord.last_sale_date.substring(0, 4));
-      baseEstimate = Math.round(propertyRecord.last_sale_price * growthMultiplier(soldYear));
-      level = 'property';
-    } else if (soldPrices.length > 0) {
-      // Use postcode sold prices
-      const amounts = soldPrices
-        .map(s => s.price)
-        .filter(p => p && p > 30000 && p < 10000000);
-      if (amounts.length > 0) {
-        baseEstimate = Math.round(amounts.reduce((a, b) => a + b, 0) / amounts.length);
-        level = 'postcode';
-        salesCount = amounts.length;
-      }
+    // STEP 4: Fallback to price trends for outward code
+    if (baseEstimate === 0) {
+      try {
+        const trendResult = await apiGet('/api/price_trends/' + encodeURIComponent(outward) + '/');
+        if (trendResult.status === 200 && trendResult.body && trendResult.body.trends) {
+          const trends = trendResult.body.trends;
+          if (trends.length > 0) {
+            const latest = trends[trends.length - 1];
+            baseEstimate = latest.median_price || 0;
+            level = 'area';
+          }
+        }
+      } catch(e) { /* continue */ }
     }
 
-    // Fallback
+    // Final fallback
     if (baseEstimate === 0) {
       baseEstimate = 350000;
       level = 'none';
-      salesCount = 0;
     }
 
     const margin = level === 'property' ? 0.06 : level === 'postcode' ? 0.09 : 0.13;
-    const avgSalePrice = soldPrices.length > 0
-      ? Math.round(soldPrices.filter(s => s.price > 0).reduce((a, s) => a + s.price, 0) / soldPrices.filter(s => s.price > 0).length)
-      : 0;
-
-    // Build recent sales list
-    const recentSales = soldPrices.slice(0, 10).map(s => ({
-      address: s.address || '',
-      amount: s.price || 0,
-      date: s.date || null
-    }));
-
-    // Property details if available
-    const propertyDetails = propertyRecord ? {
-      bedrooms: propertyRecord.bedrooms || null,
-      propertyType: propertyRecord.property_type || null,
-      tenure: propertyRecord.tenure || null,
-      epc: propertyRecord.epc_rating || null
-    } : null;
 
     return {
       statusCode: 200,
@@ -163,7 +195,7 @@ exports.handler = async function(event) {
       })
     };
 
-  } catch (err) {
+  } catch(err) {
     return {
       statusCode: 500,
       headers,
