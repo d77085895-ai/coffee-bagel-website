@@ -873,10 +873,7 @@ function resetTool(){
 </script>
 <script>
 (function(){
-  if(sessionStorage.getItem('valBarClosed')) return;
-  var bar = document.getElementById('valBar');
-  if(!bar) return;
-  setTimeout(function(){ bar.classList.add('visible'); }, 1500);
+  // Don't show valuation bar on the valuation page itself
 })();
 function closeValBar(){
   document.getElementById('valBar').classList.remove('visible');
