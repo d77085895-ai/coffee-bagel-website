@@ -120,6 +120,7 @@
     .wa-label span{font-family:'Inter',sans-serif;font-size:11px;color:rgba(255,255,255,0.82);margin:0;display:block}
   
     .val-bar{position:fixed;top:72px;left:0;right:0;z-index:90;background:var(--espresso);padding:10px 48px;display:flex;align-items:center;justify-content:space-between;gap:16px;transform:translateY(-100%);transition:transform 0.4s ease;box-shadow:0 2px 12px rgba(44,24,16,0.15)}
+    .val-bar-right{display:flex;align-items:center;gap:16px;flex-shrink:0}
     .val-bar.visible{transform:translateY(0)}
     .val-bar p{font-size:13px;color:rgba(245,240,232,0.75);margin:0}
     .val-bar p strong{color:var(--cream)}
@@ -146,8 +147,10 @@
 <!-- VALUATION BAR -->
 <div class="val-bar" id="valBar">
   <p><strong>Find out what your property is worth</strong> &mdash; get an instant estimate in minutes</p>
-  <a href="valuation.html">Free Valuation</a>
-  <button class="val-bar-close" onclick="closeValBar()">&#x2715;</button>
+  <div class="val-bar-right">
+    <a href="valuation.html">Free Valuation</a>
+    <button class="val-bar-close" onclick="closeValBar()">&#x2715;</button>
+  </div>
 </div>
 <nav>
   <a href="index.html" class="nav-logo">
@@ -263,22 +266,36 @@ function toggleMenu(){
 
 <script>
   // Cookie banner logic
+  function positionWA() {
+    var banner = document.getElementById('cookieBanner');
+    var wa = document.querySelector('.wa-wrap');
+    if (!wa) return;
+    if (banner && banner.style.display !== 'none' && banner.offsetHeight > 0) {
+      wa.style.bottom = (banner.offsetHeight + 12) + 'px';
+    } else {
+      wa.style.bottom = '24px';
+    }
+  }
   (function() {
     var consent = localStorage.getItem('cookieConsent');
-    if (consent) {
-      document.addEventListener('DOMContentLoaded', function() {
-        var banner = document.getElementById('cookieBanner');
+    document.addEventListener('DOMContentLoaded', function() {
+      var banner = document.getElementById('cookieBanner');
+      if (consent) {
         if (banner) banner.style.display = 'none';
-      });
-    }
+      }
+      positionWA();
+      window.addEventListener('resize', positionWA);
+    });
   })();
   function acceptCookies() {
     localStorage.setItem('cookieConsent', 'accepted');
     document.getElementById('cookieBanner').style.display = 'none';
+    positionWA();
   }
   function declineCookies() {
     localStorage.setItem('cookieConsent', 'declined');
     document.getElementById('cookieBanner').style.display = 'none';
+    positionWA();
   }
 </script>
 
