@@ -471,6 +471,18 @@ function switchTab(id, btn) {
   document.getElementById('tab-' + id).classList.add('active');
   btn.classList.add('active');
 }
+(function(){
+  var params = new URLSearchParams(window.location.search);
+  var tab = params.get('tab');
+  if(tab){
+    var map = {landlords:0, tenants:1, fees:2};
+    if(map.hasOwnProperty(tab)){
+      var btns = document.querySelectorAll('.tab-btn');
+      var targetBtn = btns[map[tab]];
+      if(targetBtn) switchTab(tab, targetBtn);
+    }
+  }
+})();
 </script>
 <script>
 function toggleMenu(){
