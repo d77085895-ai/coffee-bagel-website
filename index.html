@@ -88,6 +88,13 @@
 
     /* WHY US */
     .why-us { background: var(--espresso); }
+    .referral-section { background: var(--light-grey); text-align: center; padding: 72px 48px; }
+    .referral-card { max-width: 640px; margin: 0 auto; background: var(--cream); border: 1px solid var(--gold); border-radius: 4px; padding: 48px 40px; }
+    .referral-icon { font-size: 36px; margin-bottom: 16px; display: block; }
+    .referral-card .section-title { margin-bottom: 16px; }
+    .referral-card p { font-size: 15px; color: var(--charcoal); margin-bottom: 28px; }
+    .referral-card .btn-primary { display: inline-block; }
+    @media(max-width:768px){ .referral-section { padding: 52px 24px; } .referral-card { padding: 36px 24px; } }
     .why-us .section-title { color: var(--cream); }
     .why-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 32px; }
     .why-card { border-top: 1px solid rgba(201,169,110,0.3); padding-top: 28px; }
@@ -555,6 +562,17 @@
       <div class="review-author">Tony L.</div>
       <div class="review-meta">Landlord · Google Review</div>
     </div>
+  </div>
+</section>
+
+<!-- REFERRAL PROGRAMME -->
+<section class="referral-section">
+  <div class="referral-card">
+    <span class="referral-icon">🎁</span>
+    <p class="section-eyebrow">Refer a Friend</p>
+    <h2 class="section-title">Know someone thinking of selling or letting?</h2>
+    <p>We'll reward you for the introduction — call us to find out more.</p>
+    <a href="tel:02088043666" class="btn-primary">Call 020 8804 3666</a>
   </div>
 </section>
 
